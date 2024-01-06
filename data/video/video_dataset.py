@@ -19,7 +19,7 @@ args:
     resize_list: resize size (h, w) or -1
 '''
 class VideoDataSet(Dataset):
-    def __init__(self, args):
+    def __init__(self, args, preload = False):
         self.args = args
         if os.path.isfile(args.data_path):
             self.video = decord.VideoReader(args.data_path)
@@ -32,6 +32,7 @@ class VideoDataSet(Dataset):
         # import pdb; pdb.set_trace; from IPython import embed; embed()     
         first_frame = self.img_transform(self.img_load(0))
         self.final_size = first_frame.size(-2) * first_frame.size(-1)
+        self.preload = preload
 
     def img_load(self, idx):
         if isinstance(self.video, list):

@@ -4,6 +4,7 @@ import numpy as np
 from math import pi, sqrt, ceil
 import time
 from timm.models.layers import trunc_normal_, DropPath
+import torch.nn.functional as F
 
 def Quantize_tensor(img_embed, quant_bit):
     out_min = img_embed.min(dim=1, keepdim=True)[0]
@@ -49,10 +50,7 @@ class HNeRV(nn.Module):
         self.embed = args.embed
         ks_enc, ks_dec1, ks_dec2 = [int(x) for x in args.ks.split('_')]
         enc_blks, dec_blks = [int(x) for x in args.num_blks.split('_')]
-        if args.multi_input:
-            in_chans = 6
-        else:
-            in_chans = 3
+        self.transform_func = TransformInput(args)
         # BUILD Encoder LAYERS
         if len(args.enc_strds):         #HNeRV
             enc_dim1, enc_dim2 = [int(x) for x in args.enc_dim.split('_')]
@@ -60,7 +58,7 @@ class HNeRV(nn.Module):
             c_out_list[-1] = enc_dim2
             if args.conv_type[0] == 'convnext':
                 self.encoder = ConvNeXt(stage_blocks=enc_blks, strds=args.enc_strds, dims=c_out_list,
-                    drop_path_rate=0, in_chans=in_chans)
+                    drop_path_rate=0, in_chans=3)
             else:
                 c_in_list[0] = 3
                 encoder_layers = []
@@ -93,10 +91,10 @@ class HNeRV(nn.Module):
                     dec_embed_size.append((h,w))
         if args.norm == 'ln':
             decoder_layer1 = NeRVBlock(dec_block=False, conv_type='conv', ngf=ch_in, new_ngf=out_f, ks=0, strd=1, 
-                bias=True, norm=args.norm, act=args.act, transform = args.transform, dec_embed_size=dec_embed_size[0])
+                bias=True, norm=args.norm, act=args.act, dec_embed_size=dec_embed_size[0])
         else:
             decoder_layer1 = NeRVBlock(dec_block=False, conv_type='conv', ngf=ch_in, new_ngf=out_f, ks=0, strd=1, 
-                bias=True, norm=args.norm, act=args.act, transform = args.transform)
+                bias=True, norm=args.norm, act=args.act)
         decoder_layers.append(decoder_layer1)
         for i, strd in enumerate(args.dec_strds):                         
             reduction = sqrt(strd) if args.reduce==-1 else args.reduce
@@ -104,10 +102,10 @@ class HNeRV(nn.Module):
             for j in range(dec_blks):
                 if args.norm == 'ln':
                     cur_blk = NeRVBlock(dec_block=True, conv_type=args.conv_type[1], ngf=ngf, new_ngf=new_ngf, 
-                        ks=min(ks_dec1+2*i, ks_dec2), strd=1 if j else strd, bias=True, norm=args.norm, act=args.act, transform = args.transform, dec_embed_size=dec_embed_size[i+1])
+                        ks=min(ks_dec1+2*i, ks_dec2), strd=1 if j else strd, bias=True, norm=args.norm, act=args.act, dec_embed_size=dec_embed_size[i+1])
                 else:
                     cur_blk = NeRVBlock(dec_block=True, conv_type=args.conv_type[1], ngf=ngf, new_ngf=new_ngf, 
-                        ks=min(ks_dec1+2*i, ks_dec2), strd=1 if j else strd, bias=True, norm=args.norm, act=args.act, transform = args.transform)
+                        ks=min(ks_dec1+2*i, ks_dec2), strd=1 if j else strd, bias=True, norm=args.norm, act=args.act)
                 decoder_layers.append(cur_blk)
                 ngf = new_ngf
         
@@ -127,11 +125,6 @@ class HNeRV(nn.Module):
                 input = self.pe_embed(input[:,None]).float()
             img_embed = self.encoder(input)
 
-        # add gaussian noise to the embedding each 20 epochs
-        if self.args.gaussian:
-            if epoch> 10 and epoch< self.args.stop and epoch % 10 == 0:
-                self.noise = self.gaussian_generator(img_embed.shape, img_embed.device)       
-                img_embed = img_embed + self.noise
         # import pdb; pdb.set_trace; from IPython import embed; embed() 
         # 
         # bunny_flatten = img_embed.flatten(2)
@@ -155,12 +148,32 @@ class HNeRV(nn.Module):
 
         return  img_out, embed_list, dec_time
 
+class TransformInput(nn.Module):
+    def __init__(self, args):
+        super(TransformInput, self).__init__()
+        self.vid = args.vid
+        if 'inpaint' in self.vid:
+            self.inpaint_size = int(self.vid.split('_')[-1]) // 2
+
+    def forward(self, img):
+        inpaint_mask = torch.ones_like(img)
+        if 'inpaint' in self.vid:
+            gt = img.clone()
+            h,w = img.shape[-2:]
+            inpaint_mask = torch.ones((h,w)).to(img.device)
+            for ctr_x, ctr_y in [(1/2, 1/2), (1/4, 1/4), (1/4, 3/4), (3/4, 1/4), (3/4, 3/4)]:
+                ctr_x, ctr_y = int(ctr_x * h), int(ctr_y * w)
+                inpaint_mask[ctr_x - self.inpaint_size: ctr_x + self.inpaint_size, ctr_y - self.inpaint_size: ctr_y + self.inpaint_size] = 0
+            input = (img * inpaint_mask).clamp(min=0,max=1)
+        else:
+            input, gt = img, img
+
+        return input, gt, inpaint_mask.detach()
+
 class NeRVBlock(nn.Module):
     def __init__(self, **kargs):
         super().__init__()
         conv = UpConv if kargs['dec_block'] else DownConv
-        if kargs['transform']:
-            self.attn = nn.MultiheadAttention(kargs['ngf'], 1)
         self.conv = conv(ngf=kargs['ngf'], new_ngf=kargs['new_ngf'], strd=kargs['strd'], ks=kargs['ks'], 
             conv_type=kargs['conv_type'], bias=kargs['bias'])
         if kargs['norm'] == 'ln':
@@ -168,14 +181,8 @@ class NeRVBlock(nn.Module):
         else:
             self.norm = NormLayer(kargs['norm'], kargs['new_ngf'])
         self.act = ActivationLayer(kargs['act'])
-        self.transform = kargs['transform']
 
     def forward(self, x):
-        if self.transform:
-            b,c,h,w = x.shape
-            c_attn = x.permute(0,2,3,1).contiguous().view(b,-1,c)
-            c_attn = self.attn(c_attn, c_attn, c_attn)[0]
-            x = x + c_attn.view(b,h,w,c).permute(0,3,1,2)
         return self.act(self.norm(self.conv(x)))
 
 class ConvNeXt(nn.Module):
