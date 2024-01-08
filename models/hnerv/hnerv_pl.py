@@ -27,10 +27,11 @@ class CosineScheduler(_LRScheduler):
             lr_mult = 1.
         new_lrs = []
         for lr in self.initial_lrs:
-            if self.cur_epoch is None or self.cur_epoch<self.up_ratio:
-                new_lrs.append(lr*lr_mult)
-            else:
-                new_lrs.append(lr*(1-self.min_lr)*lr_mult+lr * self.min_lr)
+            new_lrs.append(lr*lr_mult)
+            # if self.cur_epoch is None or self.cur_epoch<self.up_ratio:
+            #     new_lrs.append(lr*lr_mult)
+            # else:
+            #     new_lrs.append(lr*(1-self.min_lr)*lr_mult+lr * self.min_lr)
         return new_lrs
 
     def step(self, epoch = None, cur_ratio=None):
@@ -70,38 +71,61 @@ class PLHNERV(pl.LightningModule):
         self.model = HNeRV(args)
         self.args = args
         self.automatic_optimization = False
+        self.save_hyperparameters()
 
-    def forward(self, x, epoch):
-        return self.model(x, epoch=epoch)
+    def forward(self, x):
+        return self.model(x)
     
     def training_step(self, batch, batch_idx):
         img_data = batch['img']
         img_data, img_gt, inpaint_mask = self.model.transform_func(img_data)
         cur_input = batch['norm_idx'] if 'pe' in self.args.embed else img_data
-        cur_epoch = self.current_epoch
-        img_out, _, _ = self.forward(cur_input, cur_epoch)
-        final_loss = loss_fn(img_out*inpaint_mask, img_gt*inpaint_mask, self.args.loss)   
-
+        cur_epoch = self.current_epoch 
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
-        # batch_size is set to 1 for bunny and davis dataset, >1 for coco images
-        cur_ratio = (cur_epoch+batch_idx/(1+len(self.trainer._data_connector._train_dataloader_source.dataloader())//self.args.batch_size))/self.args.epochs
-            
+
+        # lr should be set to the minimum before first forward
+        # opt.param_groups[0]['lr'] *= scheduler.min_lr
+        
+        img_out, _, _ = self.forward(cur_input)
+        final_loss = loss_fn(img_out*inpaint_mask, img_gt*inpaint_mask, self.args.loss)   
+
         opt.zero_grad()
-        self.manual_backward(final_loss)
-        opt.step()  
-        scheduler.step(cur_ratio=cur_ratio)  
+        self.manual_backward(final_loss)    
+        opt.step()     
+        cur_ratio = (cur_epoch+batch_idx/len(self.trainer._data_connector._train_dataloader_source.dataloader()))/self.args.epochs
+        scheduler.step(cur_ratio=cur_ratio) 
+          
+        
+        train_psnr = self.psnr_fn_single(img_out.detach(), img_gt)
+        if not hasattr(self, 'train_psnrs'):
+            self.train_psnrs = []
+        self.train_psnrs.append(train_psnr)
+
+        lr = opt.param_groups[0]['lr']
+        self.log('learning_rate', lr, on_step=True, on_epoch=False, prog_bar=True, logger=self.args.enable_logger)
  
-        self.log('train_loss', final_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        # self.log('train_loss', final_loss, on_step=True, on_epoch=True, prog_bar=False, logger=False)
         
         return final_loss
     
+    def on_train_epoch_end(self, outputs=None):
+        avg_psnr = torch.cat(self.train_psnrs).mean()
+        self.log('avg_psnr', avg_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger)
+        self.train_psnrs = []
+        if not hasattr(self, 'max_train_psnr'):
+            self.max_train_psnr = 0
+        if avg_psnr > self.max_train_psnr:
+            self.max_train_psnr = avg_psnr
+        self.log('max_train_psnr', self.max_train_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger)
+
+
     def validation_step(self, batch, batch_idx):
         img_data = batch['img']
         img_data, img_gt, inpaint_mask = self.model.transform_func(img_data)
         cur_input = batch['norm_idx'] if 'pe' in self.args.embed else img_data
         cur_epoch = self.current_epoch
-        img_out, _, _ = self.forward(cur_input, cur_epoch)
+        img_out, _, _ = self.forward(cur_input)
         psnr = self.psnr_fn_single(img_out.detach(), img_gt) 
         
         return {'psnr':psnr}
@@ -114,6 +138,7 @@ class PLHNERV(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         up_ratio, up_pow, min_lr = [float(x) for x in self.args.lr_type.split('_')[1:]]
         scheduler = CosineScheduler(optimizer, up_ratio, up_pow, min_lr)
+        scheduler.step(cur_ratio=0)
         return [optimizer], [scheduler]
     
     def psnr_fn_single(self,output, gt):

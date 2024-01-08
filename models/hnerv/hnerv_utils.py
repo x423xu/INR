@@ -43,7 +43,7 @@ def add_model_specific_args(parent_parser):
     parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
     # parameters for encoder
     parser.add_argument('--embed', type=str, default='', help='empty string for HNeRV, and base value/embed_length for NeRV position encoding')
-    parser.add_argument('--ks', type=str, default='0_3_3', help='kernel size for encoder and decoder')
+    parser.add_argument('--ks', type=str, default='0_1_5', help='kernel size for encoder and decoder')
     parser.add_argument('--enc_strds', type=int, nargs='+', default=[5,4,4,2,2], help='stride list for encoder')
     parser.add_argument('--enc_dim', type=str, default='64_16', help='enc latent dim and embedding ratio')
     parser.add_argument('--modelsize', type=float,  default=1.5, help='model parameters size: model size + embedding parameters')

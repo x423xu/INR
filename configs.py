@@ -28,6 +28,9 @@ parser.add_argument('--enable_logger', action='store_true', default=False, help=
 parser.add_argument('--logger_type', type=str, default='csv_logger', choices=['csv_logger','wandb_logger','tensorboard_logger'], help='which logger to use')
 parser.add_argument('--log_dir', type=str, default='logs', help='logging directory')
 
+# parameters for evaluation
+parser.add_argument('--val_freq', type=int, default=30, help='evaluation mode')
+
 known_args, remaining_argv = parser.parse_known_args()
 model = known_args.model
 dataset = known_args.dataset

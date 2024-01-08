@@ -37,7 +37,7 @@ class VideoDataModule(pl.LightningDataModule):
         self.sampler = torch.utils.data.distributed.DistributedSampler(self.train_dataset) if self.args.distributed else None
     
     def train_dataloader(self):
-        train_loader = DataLoader(self.train_dataset, batch_size=self.args.batch_size, shuffle=False,
+        train_loader = DataLoader(self.train_dataset, batch_size=self.args.batch_size, shuffle=(self.sampler is None),
             num_workers=self.args.workers, pin_memory=True, sampler=self.sampler, drop_last=False, worker_init_fn=worker_init_fn)
         return train_loader
     

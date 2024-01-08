@@ -117,7 +117,7 @@ class HNeRV(nn.Module):
     def gaussian_generator(self, shape, device):
         return torch.randn(shape, device=device) * self.args.std + self.args.mean
 
-    def forward(self, input, input_embed=None, encode_only=False, epoch=1):
+    def forward(self, input, input_embed=None, encode_only=False):
         if input_embed != None:
             img_embed = input_embed
         else:

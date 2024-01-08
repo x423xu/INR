@@ -2,3 +2,4 @@ logs*
 __pycache__/
 launch.json
 output/
+checkpoints*
