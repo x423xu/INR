@@ -8,6 +8,8 @@ from .hnerv_utils import loss_fn
 import torch
 import numpy as np
 import torch.nn.functional as F
+from PIL import Image
+import wandb
 
 class CosineScheduler(_LRScheduler):
     def __init__(self,optimizer,up_ratio, up_pow, min_lr, last_epoch=-1) -> None:
@@ -78,23 +80,41 @@ class PLHNERV(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         img_data = batch['img']
+        import matplotlib.pyplot as plt
+
+        # Assuming img_data is a tensor containing the image data
+        # if self.args.debug:
+        # first_img = img_data[0].cpu().numpy()  # Convert tensor to numpy array
+        # first_img = np.transpose(first_img, (1, 2, 0))  # Transpose to (H, W, C)
+        # first_img = (first_img - np.min(first_img)) / (np.max(first_img) - np.min(first_img))  # Normalize to 0-1
+        # first_img = (first_img * 255).astype(np.uint8)  # Scale to 0-255
+        # plt.imshow(first_img)
+        # plt.show()
+
         img_data, img_gt, inpaint_mask = self.model.transform_func(img_data)
         cur_input = batch['norm_idx'] if 'pe' in self.args.embed else img_data
         cur_epoch = self.current_epoch 
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
-
-        # lr should be set to the minimum before first forward
-        # opt.param_groups[0]['lr'] *= scheduler.min_lr
-        
+    
         img_out, _, _ = self.forward(cur_input)
-        final_loss = loss_fn(img_out*inpaint_mask, img_gt*inpaint_mask, self.args.loss)   
+        final_loss = loss_fn(img_out*inpaint_mask, img_gt*inpaint_mask, self.args.loss)  
+
+        # first_img = img_gt[0].detach().cpu().numpy()  # Convert tensor to numpy array
+        # first_img = np.transpose(first_img, (1, 2, 0))  # Transpose to (H, W, C)
+        # first_img = (first_img - np.min(first_img)) / (np.max(first_img) - np.min(first_img))  # Normalize to 0-1
+        # first_img = (first_img * 255).astype(np.uint8)  # Scale to 0-255
+        # plt.imshow(first_img)
+        # plt.show() 
 
         opt.zero_grad()
         self.manual_backward(final_loss)    
-        opt.step()     
-        cur_ratio = (cur_epoch+batch_idx/len(self.trainer._data_connector._train_dataloader_source.dataloader()))/self.args.epochs
-        scheduler.step(cur_ratio=cur_ratio) 
+        opt.step()   
+        if 'cosine' in self.args.lr_type:  
+            cur_ratio = (cur_epoch+batch_idx/len(self.trainer._data_connector._train_dataloader_source.dataloader()))/self.args.epochs
+            scheduler.step(cur_ratio=cur_ratio) 
+        if 'step' in self.args.lr_type:
+            scheduler.step()
           
         
         train_psnr = self.psnr_fn_single(img_out.detach(), img_gt)
@@ -103,42 +123,65 @@ class PLHNERV(pl.LightningModule):
         self.train_psnrs.append(train_psnr)
 
         lr = opt.param_groups[0]['lr']
-        self.log('learning_rate', lr, on_step=True, on_epoch=False, prog_bar=True, logger=self.args.enable_logger)
+        self.log('learning_rate', lr, on_step=True, on_epoch=False, prog_bar=True, logger=self.args.enable_logger, sync_dist=True if self.args.distributed else False,rank_zero_only=True)
  
-        # self.log('train_loss', final_loss, on_step=True, on_epoch=True, prog_bar=False, logger=False)
+        self.log('train_loss', final_loss, on_step=True, on_epoch=True, prog_bar=True, logger=self.args.enable_logger if self.args.dataset == 'imagenet' else False, sync_dist=True if self.args.distributed else False,rank_zero_only=True)
         
         return final_loss
     
     def on_train_epoch_end(self, outputs=None):
         avg_psnr = torch.cat(self.train_psnrs).mean()
         self.log('avg_psnr', avg_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger)
+       
         self.train_psnrs = []
         if not hasattr(self, 'max_train_psnr'):
             self.max_train_psnr = 0
         if avg_psnr > self.max_train_psnr:
             self.max_train_psnr = avg_psnr
-        self.log('max_train_psnr', self.max_train_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger)
+        self.log('max_train_psnr', self.max_train_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger,sync_dist=True if self.args.distributed else False,rank_zero_only=True)
 
 
     def validation_step(self, batch, batch_idx):
         img_data = batch['img']
         img_data, img_gt, inpaint_mask = self.model.transform_func(img_data)
         cur_input = batch['norm_idx'] if 'pe' in self.args.embed else img_data
-        cur_epoch = self.current_epoch
         img_out, _, _ = self.forward(cur_input)
         psnr = self.psnr_fn_single(img_out.detach(), img_gt) 
-        
+
+        # let's log the first image to see what it looks like
+        if self.trainer.is_global_zero:
+            if batch_idx == 0:
+                first_img = img_data[1].cpu().numpy()  # Convert tensor to numpy array
+                first_img = np.transpose(first_img, (1, 2, 0))  # Transpose to (H, W, C)
+                first_img = (first_img - np.min(first_img)) / (np.max(first_img) - np.min(first_img))  # Normalize to 0-1
+                first_img = (first_img * 255).astype(np.uint8)  # Scale to 0-255
+
+                first_out = img_out[1].detach().cpu().numpy()  # Convert tensor to numpy array
+                first_out = np.transpose(first_out, (1, 2, 0))  # Transpose to (H, W, C)
+                first_out = (first_out - np.min(first_out)) / (np.max(first_out) - np.min(first_out))
+                first_out = (first_out * 255).astype(np.uint8)
+
+                cat_img = np.concatenate((first_img, first_out), axis=1)
+                cat_pil = Image.fromarray(cat_img)
+                self.val_imgs=cat_pil
+
         return {'psnr':psnr}
     
     def validation_epoch_end(self, outputs):
         psnr = torch.cat([x['psnr'] for x in outputs], 0).mean()
-        self.log('val_psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger)
+        self.log('val_psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger, sync_dist=True if self.args.distributed else False, rank_zero_only=True) 
+        # lest's see what the output_image look like
+        if self.trainer.is_global_zero and self.args.enable_logger and self.args.logger_type == 'wandb_logger':
+            self.logger.experiment.log({"output_image": [wandb.Image(self.val_imgs, caption="input vs output")]})
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
-        up_ratio, up_pow, min_lr = [float(x) for x in self.args.lr_type.split('_')[1:]]
-        scheduler = CosineScheduler(optimizer, up_ratio, up_pow, min_lr)
-        scheduler.step(cur_ratio=0)
+        if 'cosine' in self.args.lr_type:
+            up_ratio, up_pow, min_lr = [float(x) for x in self.args.lr_type.split('_')[1:]]
+            scheduler = CosineScheduler(optimizer, up_ratio, up_pow, min_lr)
+            scheduler.step(cur_ratio=0)
+        if 'step' in self.args.lr_type:
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)        
         return [optimizer], [scheduler]
     
     def psnr_fn_single(self,output, gt):

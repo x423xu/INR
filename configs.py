@@ -7,7 +7,8 @@ parser.add_argument('--project_name', type=str, default='INR', help='project nam
 parser.add_argument('--debug', action='store_true', help='debug mode')
 parser.add_argument('--outf', type=str, default='output', help='output folder')
 parser.add_argument('--model', type=str, default='hnerv', help='model name')
-parser.add_argument('--dataset', type=str, default='video', help='dataset name')
+parser.add_argument('--dataset', type=str, default='video', choices=['video', 'imagenet'],help='dataset name')
+parser.add_argument('--gpus',type=int, default=1, help='number of gpus to use')
 
 # parameters for training
 parser.add_argument('-j', '--workers', type=int, help='number of data loading workers', default=4)
@@ -29,7 +30,7 @@ parser.add_argument('--logger_type', type=str, default='csv_logger', choices=['c
 parser.add_argument('--log_dir', type=str, default='logs', help='logging directory')
 
 # parameters for evaluation
-parser.add_argument('--val_freq', type=int, default=30, help='evaluation mode')
+
 
 known_args, remaining_argv = parser.parse_known_args()
 model = known_args.model
@@ -37,6 +38,8 @@ dataset = known_args.dataset
 
 if dataset == 'video':
     from data.video.video_utils import add_data_specific_args  
+elif dataset == 'imagenet':
+    from data.imagenet.imagenet_utils import add_data_specific_args
 if model == 'hnerv':
     from models.hnerv.hnerv_utils import add_model_specific_args
 
