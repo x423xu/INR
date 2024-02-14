@@ -7,3 +7,4 @@ playground/
 outputs/
 lightning_logs/
 wandb/
+notebooks/*
