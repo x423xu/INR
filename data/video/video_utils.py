@@ -26,5 +26,5 @@ def add_data_specific_args(parent_parser):
     parser.add_argument('--resize_list', type=str, default='-1', help='video resize size',)
     parser.add_argument('--dump_images', action='store_true', default=False, help='dump the prediction images')
     parser.add_argument('--dump_videos', action='store_true', default=False, help='concat the prediction images into video')
-    parser.add_argument('--val_freq', type=int, default=30, help='evaluation mode')
+    parser.add_argument('--val_freq', type=int, default=1, help='evaluation frequency')
     return parser

@@ -3,6 +3,8 @@ from pytorch_msssim import ms_ssim, ssim
 import os
 import numpy as np
 import argparse
+from copy import deepcopy
+import torch.nn as nn
 
 def loss_fn(pred, target, loss_type='L2', batch_average=True):
     target = target.detach()
@@ -64,3 +66,44 @@ def add_model_specific_args(parent_parser):
     
     return parser
     
+''''
+Given a hnerv model, and the specifications about layers to be redefined, return a new model with the redefined layers
+input params: model, specifications
+output: model
+
+params explanation:
+    model: an HNeRV model
+    specifications: a dictionary containing the weights data of decoders 1-5
+'''
+def redefine_hnerv(model, spec_dim, num, mode='tkd'):
+    redefine_model = deepcopy(model)
+    for dec_id, weight in spec_dim.items():
+        tk_core, tk_factors, cp_factors = weight['tk_core'], weight['tk_factors'], weight['cp_factors']   
+        bias_value = redefine_model.model.decoder[dec_id].conv.upconv._modules['0'].bias.data
+        if mode == 'tkd':
+            core_tensor_shape = tk_core[0].shape
+            # factor_matrix_1_shape = tk_factors[0].shape
+            factor_matrix_2_shape = tk_factors[1].shape
+            factor_matrix_3_shape = tk_factors[2].shape
+            redefine_model.model.decoder[dec_id].conv.upconv._modules['0']=nn.Sequential(
+                nn.Conv2d(factor_matrix_3_shape[0], factor_matrix_3_shape[1], kernel_size=1, stride=1, padding=0, bias=False),
+                nn.Conv2d(core_tensor_shape[0], core_tensor_shape[1], kernel_size=core_tensor_shape[2], stride=1, padding=core_tensor_shape[2]//2, bias=False),
+                nn.Conv2d(factor_matrix_2_shape[1], factor_matrix_2_shape[0], kernel_size=1, stride=1, padding=0, bias=True)
+            )
+            # load values into the model
+            redefine_model.model.decoder[dec_id].conv.upconv._modules['0'][0].weight.data = tk_factors[2].t().unsqueeze(-1).unsqueeze(-1)
+            redefine_model.model.decoder[dec_id].conv.upconv._modules['0'][1].weight.data = tk_core* tk_factors[0][num]
+            redefine_model.model.decoder[dec_id].conv.upconv._modules['0'][2].weight.data = tk_factors[1].unsqueeze(-1).unsqueeze(-1)
+            redefine_model.model.decoder[dec_id].conv.upconv._modules['0'][2].bias.data = bias_value
+        elif mode == 'tkd-cpd':
+            core_tensor_shape = tk_core[0].shape
+            # factor_matrix_1_shape = tk_factors[0].shape
+            factor_matrix_2_shape = tk_factors[1].shape
+            factor_matrix_3_shape = tk_factors[2].shape
+            cp_factors_1_shape = cp_factors[0].shape
+            cp_factors_2_shape = cp_factors[1].shape
+            cp_factors_3_shape = cp_factors[2].shape
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
+    return redefine_model

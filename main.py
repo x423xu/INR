@@ -38,14 +38,17 @@ def init_logger(args, version_name):
         logger = None
     return logger
 
+'''
+I want to save the model every 10 epochs, so to view the weight changes
+'''
 def init_checkpoint(args, version_name):
     dirpath = os.path.join(args.log_dir,version_name, 'checkpoints')
     ckpt_callback = ModelCheckpoint(dirpath=dirpath, 
                            save_last=True, 
-                           save_top_k=1, 
+                           save_top_k=-1, 
+                           every_n_epochs=10,
                            monitor="val_psnr", 
                            mode="max", 
-                           every_n_epochs=1, 
                            verbose=False)
     return ckpt_callback
 
@@ -82,4 +85,5 @@ def main():
     trainer = pl.Trainer(logger=logger,callbacks=[ckpt_callback], **kwargs)
     trainer.fit(model, dm)
 
-main()
+if __name__ == '__main__':
+    main()

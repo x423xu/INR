@@ -10,6 +10,7 @@ import numpy as np
 import torch.nn.functional as F
 from PIL import Image
 import wandb
+import os
 
 class CosineScheduler(_LRScheduler):
     def __init__(self,optimizer,up_ratio, up_pow, min_lr, last_epoch=-1) -> None:
@@ -139,6 +140,18 @@ class PLHNERV(pl.LightningModule):
         if avg_psnr > self.max_train_psnr:
             self.max_train_psnr = avg_psnr
         self.log('max_train_psnr', self.max_train_psnr, on_step=False, on_epoch=True, prog_bar=True, logger=self.args.enable_logger,sync_dist=True if self.args.distributed else False,rank_zero_only=True)
+        '''
+        log weights and gradients of the model every 10 epochs
+        '''
+        if self.args.log_model and self.args.enable_logger and self.args.logger_type == 'wandb_logger':
+            if self.trainer.current_epoch % 10 == 9:
+                for name, param in self.named_parameters():
+                    if param.requires_grad:
+                        self.logger.experiment.log({
+                            f"weights/{name}": wandb.Histogram(param.detach().cpu().numpy()),
+                            f"grads/{name}": wandb.Histogram(param.grad.cpu().numpy()),
+                            "epoch": self.current_epoch
+                        })
 
 
     def validation_step(self, batch, batch_idx):
@@ -174,6 +187,33 @@ class PLHNERV(pl.LightningModule):
         if self.trainer.is_global_zero and self.args.enable_logger and self.args.logger_type == 'wandb_logger':
             self.logger.experiment.log({"output_image": [wandb.Image(self.val_imgs, caption="input vs output")]})
 
+    def test_step(self, batch, batch_idx):
+        img_data = batch['img']
+        img_data, img_gt, inpaint_mask = self.model.transform_func(img_data)
+        cur_input = batch['norm_idx'] if 'pe' in self.args.embed else img_data
+        img_out, _, _ = self.forward(cur_input)
+        psnr = self.psnr_fn_single(img_out.detach(), img_gt)
+
+        # Normalize img_out to 0-255 as uint8
+        first_img = img_data[0].cpu().numpy()  # Convert tensor to numpy array
+        first_img = np.transpose(first_img, (1, 2, 0))  # Transpose to (H, W, C)
+        first_img = (first_img - np.min(first_img)) / (np.max(first_img) - np.min(first_img))  # Normalize to 0-1
+        first_img = (first_img * 255).astype(np.uint8) 
+        
+        first_out = img_out[0].detach().cpu().numpy()  # Convert tensor to numpy array
+        first_out = np.transpose(first_out, (1, 2, 0))  # Transpose to (H, W, C)
+        first_out = (first_out - np.min(first_out)) / (np.max(first_out) - np.min(first_out))
+        first_out = (first_out * 255).astype(np.uint8)
+        cat_img = np.concatenate((first_img, first_out), axis=1)
+        cat_pil = Image.fromarray(cat_img)
+        id = batch['img_name'][0]
+        cat_pil.save(os.path.join('outputs', f"{id}_psnr_{psnr.item():.2f}.png"))
+        return {'psnr':psnr}
+    
+    def test_epoch_end(self, outputs):
+        avg_psnr = torch.cat([x['psnr'] for x in outputs], 0).mean()
+        print(f'average test psnr: {avg_psnr}')
+            
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
         if 'cosine' in self.args.lr_type:

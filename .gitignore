@@ -3,3 +3,7 @@ __pycache__/
 launch.json
 output/
 checkpoints*
+playground/
+outputs/
+lightning_logs/
+wandb/

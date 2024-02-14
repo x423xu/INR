@@ -3,6 +3,7 @@ This file is used to load the imagenet dataset.
 '''
 import os
 from typing import Any, Callable, Optional
+from pytorch_lightning.utilities.types import EVAL_DATALOADERS
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Subset
@@ -25,11 +26,13 @@ class ImageNetDataSet(ImageFolder):
         """
         norm_index = index / self.__len__()
         path, target = self.samples[index]
+        img_name = os.path.basename(path)
+        img_name = os.path.splitext(img_name)[0]
         img = self.loader(path)
         # print(img.width, img.height)
         if self.transform is not None:
             img = self.transform(img)   
-        sample = {'img': img, 'idx': index, 'norm_idx': norm_index}
+        sample = {'img': img, 'idx': index, 'norm_idx': norm_index, 'img_name':img_name}
         return sample
 
 def worker_init_fn(worker_id):
@@ -53,9 +56,9 @@ class ImagenetDataModule(pl.LightningDataModule):
         full_dataset = ImageNetDataSet(root = os.path.join(self.args.data_path, 'Data/CLS-LOC/train'), transform=transform)
         indices = list(range(len(full_dataset)))
         np.random.shuffle(indices)
-        selected_train_indices = indices[:1000]
+        selected_train_indices = indices[:10000]
         self.train_dataset = Subset(full_dataset, selected_train_indices)
-        selected_val_indices = indices[:20]
+        selected_val_indices = indices[:200]
         self.val_dataset = Subset(full_dataset, selected_val_indices)
         
         first_frame = self.train_dataset[0]['img']
@@ -74,6 +77,10 @@ class ImagenetDataModule(pl.LightningDataModule):
         val_loader = DataLoader(self.val_dataset, batch_size=self.args.batch_size, shuffle=False,
             num_workers=self.args.workers, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
         return val_loader
+    
+    def test_dataloader(self):
+        test_loader = DataLoader(self.train_dataset, batch_size=1, shuffle=False)
+        return test_loader
     
     def _get_transform(self):
         if self.crop_list != '-1': 

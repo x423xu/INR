@@ -5,6 +5,7 @@ from math import pi, sqrt, ceil
 import time
 from timm.models.layers import trunc_normal_, DropPath
 import torch.nn.functional as F
+import math
 
 def Quantize_tensor(img_embed, quant_bit):
     out_min = img_embed.min(dim=1, keepdim=True)[0]
@@ -147,6 +148,7 @@ class HNeRV(nn.Module):
         dec_time = time.time() - dec_start
 
         return  img_out, embed_list, dec_time
+
 
 class TransformInput(nn.Module):
     def __init__(self, args):
